@@ -1,0 +1,115 @@
+name: Check WhatsApp Proxy image
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "37 3 * * *"
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_IMAGE: facebook/whatsapp_proxy:latest
+
+jobs:
+  check:
+    name: Check Docker image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Check current image digest
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NEW_DIGEST="$(
+            docker buildx imagetools inspect "$UPSTREAM_IMAGE" |
+            awk '/^Digest:/ {print $2; exit}'
+          )"
+
+          if [ -z "$NEW_DIGEST" ]; then
+            echo "Не удалось получить digest $UPSTREAM_IMAGE"
+            exit 1
+          fi
+
+          OLD_DIGEST="$(cat .whatsapp-proxy-digest 2>/dev/null || true)"
+
+          echo "new_digest=$NEW_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "old_digest=$OLD_DIGEST" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$OLD_DIGEST" ]; then
+            echo "first_run=true" >> "$GITHUB_OUTPUT"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Первый запуск: сохраняем текущий digest."
+          elif [ "$NEW_DIGEST" != "$OLD_DIGEST" ]; then
+            echo "first_run=false" >> "$GITHUB_OUTPUT"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Обнаружено обновление WhatsApp Proxy."
+          else
+            echo "first_run=false" >> "$GITHUB_OUTPUT"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Образ не изменился."
+          fi
+
+          {
+            echo "### WhatsApp Proxy"
+            echo
+            echo "Образ: \`$UPSTREAM_IMAGE\`"
+            echo
+            echo "Предыдущий digest: \`${OLD_DIGEST:-не зафиксирован}\`"
+            echo
+            echo "Текущий digest: \`$NEW_DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save current digest
+        if: steps.check.outputs.first_run == 'true' || steps.check.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          printf '%s\n' "${{ steps.check.outputs.new_digest }}" \
+            > .whatsapp-proxy-digest
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .whatsapp-proxy-digest
+          git commit -m "Update WhatsApp Proxy digest"
+          git push
+
+      - name: Prepare release data
+        if: steps.check.outputs.changed == 'true'
+        id: release
+        shell: bash
+        run: |
+          echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+          echo "tag=whatsapp-proxy-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+
+      - name: Create release notification
+        if: steps.check.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.release.outputs.tag }}" \
+            --target main \
+            --title "Новый Docker-образ WhatsApp Proxy — ${{ steps.release.outputs.date }}" \
+            --notes "Обнаружено изменение Docker-образа:
+
+          facebook/whatsapp_proxy:latest
+
+          Старый digest:
+          ${{ steps.check.outputs.old_digest }}
+
+          Новый digest:
+          ${{ steps.check.outputs.new_digest }}
+
+          Образ на VPS автоматически не обновлялся."
