@@ -1,4 +1,4 @@
-name: Check WhatsApp Proxy image
+name: Проверка обновлений WhatsApp Proxy
 
 on:
   workflow_dispatch:
@@ -14,29 +14,33 @@ env:
 
 jobs:
   check:
-    name: Check Docker image
+    name: Проверить Docker-образ
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Получить репозиторий
         uses: actions/checkout@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Получить текущий Docker-образ
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$UPSTREAM_IMAGE"
 
-      - name: Check current image digest
+      - name: Проверить digest образа
         id: check
         shell: bash
         run: |
           set -euo pipefail
 
           NEW_DIGEST="$(
-            docker buildx imagetools inspect "$UPSTREAM_IMAGE" |
-            awk '/^Digest:/ {print $2; exit}'
+            docker image inspect "$UPSTREAM_IMAGE" \
+              --format '{{index .RepoDigests 0}}' |
+            sed 's/.*@//'
           )"
 
           if [ -z "$NEW_DIGEST" ]; then
-            echo "Не удалось получить digest $UPSTREAM_IMAGE"
+            echo "Не удалось определить digest $UPSTREAM_IMAGE"
             exit 1
           fi
 
@@ -48,19 +52,29 @@ jobs:
           if [ -z "$OLD_DIGEST" ]; then
             echo "first_run=true" >> "$GITHUB_OUTPUT"
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Первый запуск: сохраняем текущий digest."
+
+            echo "Первый запуск."
+            echo "Фиксируем текущий digest:"
+            echo "$NEW_DIGEST"
+
           elif [ "$NEW_DIGEST" != "$OLD_DIGEST" ]; then
             echo "first_run=false" >> "$GITHUB_OUTPUT"
             echo "changed=true" >> "$GITHUB_OUTPUT"
+
             echo "Обнаружено обновление WhatsApp Proxy."
+            echo "Старый digest: $OLD_DIGEST"
+            echo "Новый digest:  $NEW_DIGEST"
+
           else
             echo "first_run=false" >> "$GITHUB_OUTPUT"
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Образ не изменился."
+
+            echo "WhatsApp Proxy не изменился."
+            echo "Digest: $NEW_DIGEST"
           fi
 
           {
-            echo "### WhatsApp Proxy"
+            echo "### Проверка WhatsApp Proxy"
             echo
             echo "Образ: \`$UPSTREAM_IMAGE\`"
             echo
@@ -69,7 +83,7 @@ jobs:
             echo "Текущий digest: \`$NEW_DIGEST\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Save current digest
+      - name: Сохранить текущий digest
         if: steps.check.outputs.first_run == 'true' || steps.check.outputs.changed == 'true'
         shell: bash
         run: |
@@ -82,10 +96,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add .whatsapp-proxy-digest
-          git commit -m "Update WhatsApp Proxy digest"
+          git commit -m "Обновить digest WhatsApp Proxy"
           git push
 
-      - name: Prepare release data
+      - name: Подготовить данные релиза
         if: steps.check.outputs.changed == 'true'
         id: release
         shell: bash
@@ -93,7 +107,7 @@ jobs:
           echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
           echo "tag=whatsapp-proxy-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
-      - name: Create release notification
+      - name: Создать уведомление о новой версии
         if: steps.check.outputs.changed == 'true'
         shell: bash
         env:
@@ -101,7 +115,7 @@ jobs:
         run: |
           gh release create "${{ steps.release.outputs.tag }}" \
             --target main \
-            --title "Новый Docker-образ WhatsApp Proxy — ${{ steps.release.outputs.date }}" \
+            --title "Обновился Docker-образ WhatsApp Proxy — ${{ steps.release.outputs.date }}" \
             --notes "Обнаружено изменение Docker-образа:
 
           facebook/whatsapp_proxy:latest
@@ -112,4 +126,4 @@ jobs:
           Новый digest:
           ${{ steps.check.outputs.new_digest }}
 
-          Образ на VPS автоматически не обновлялся."
+          VPS автоматически не обновлялся."
